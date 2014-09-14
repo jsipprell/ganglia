@@ -1,5 +1,6 @@
-// cgo interface against libganglia
-package main
+// go package to provide mechanism for decode and encode of
+// ganglia metrics. Uses cgo and requires libganglia.
+package ganglia
 
 /*
 #cgo CFLAGS: -I/nm/local/include -I/usr/local/include
@@ -10,36 +11,13 @@ package main
 import "C"
 
 import (
+  "net"
+  "sync"
   "strings"
   "errors"
   "reflect"
   "fmt"
   "log"
-)
-
-type GangliaMsgFormat uint16
-type GangliaSlope uint
-
-const (
-  GANGLIA_SLOPE_ZERO          GangliaSlope = 1 << iota
-  GANGLIA_SLOPE_POSITIVE
-  GANGLIA_SLOPE_NEGATIVE
-  GANGLIA_SLOPE_BOTH
-  GANGLIA_SLOPE_UNSPECTIFIED
-  GANGLIA_SLOPE_DERIVATIVE
-)
-const GANGLIA_MAX_MESSAGE_LEN int = 1500
-
-const (
-  GMETADATA_FULL GangliaMsgFormat = 127 + iota
-  GMETRIC_USHORT
-  GMETRIC_SHORT
-  GMETRIC_INT
-  GMETRIC_UINT
-  GMETRIC_STRING
-  GMETRIC_FLOAT
-  GMETRIC_DOUBLE
-  GMETADATA_REQUEST
 )
 
 var (
@@ -88,47 +66,71 @@ type GMetricInfo struct {
   Spoof bool
 }
 
-type GangliaMessage interface {
-  Id() GangliaMsgFormat
+// All mertrics and metadata must respond with an Id
+type GangliaMetricType interface {
+  MetricId() *GangliaMetricId
 }
 
-type GangliaMetadataContainer interface {
+// All ganglia messages have an associated format identifer
+type GangliaMessage interface {
+  FormatId() GangliaMsgFormat
+}
+
+type GangliaMetadataHandler interface {
+  IsRequest() bool
   HasMetadata() bool
+  IsMetadataDef() bool
   GetMetadata() *GangliaMetadata
 }
 
 type GangliaMetadataMessage interface {
-  GangliaMetadataContainer
-  Id() GangliaMsgFormat
+  GangliaMetadataHandler
+  FormatId() GangliaMsgFormat
   MetricId() *GangliaMetricId
-  IsRequest() bool
 }
 
+// The basic metric interface.
 type GMetric interface {
-  GangliaMetadataContainer
-  Id() GangliaMsgFormat
+  GangliaMetadataHandler
+  FormatId() GangliaMsgFormat
   MetricId() *GangliaMetricId
   GetValue() reflect.Value
   SetFormat(f []byte)
   String() string
 }
 
+// GangliaMetricId identifies a specific message, metric
+// or metadata packet.
 type GangliaMetricId struct {
   Host, Name string
   Spoof bool
   Exists bool
+  id uid
 }
 
-type gangliaBaseMessage struct {
+// Return the canonical metric id for a message or metadata
+// packet.
+func (mid *GangliaMetricId) MetricId() *GangliaMetricId {
+  return mid
+}
+
+type gangliaMsg struct {
   formatIdentifier GangliaMsgFormat
 }
 
-func (msg gangliaBaseMessage) Id() (GangliaMsgFormat) {
+// Returns the canonical format id for any ganglia object
+func (msg gangliaMsg) FormatId() (GangliaMsgFormat) {
   return msg.formatIdentifier
 }
 
-func (msg gangliaBaseMessage) String() (string) {
+// Returns a printable version of a ganglia message id
+func (msg gangliaMsg) String() (string) {
   return msg.formatIdentifier.String()
+}
+
+// Returns true if the object is metadata defintiion.
+func (msg *gangliaMsg) IsMetadataDef() bool {
+  return false
 }
 
 func (sl GangliaSlope) String() (s string) {
@@ -143,7 +145,7 @@ func (sl GangliaSlope) String() (s string) {
     s = "both"
   case GANGLIA_SLOPE_DERIVATIVE:
     s = "derivative"
-  case GANGLIA_SLOPE_UNSPECTIFIED:
+  case GANGLIA_SLOPE_UNSPECIFIED:
     s = "unspecified"
   default:
     s = fmt.Sprintf("unsupported_slope_%d",int(sl))
@@ -182,22 +184,61 @@ type KeyValueMetadata interface {
   ValueFor(string) (string, error)
 }
 
+// Basic ganglia metadata.
 type GangliaMetadata struct {
   Type string
   Name string
   Units string
   Slope GangliaSlope
   Tmax, Dmax uint
+
   extra []KeyValueMetadata
+  metric_id *GangliaMetricId
 }
 
+// Create a unique copy of some piece of metadata.
+// Note that the metric id is never copied and shared
+// by all copies.
+func (md *GangliaMetadata) copy() (*GangliaMetadata) {
+  var extra []KeyValueMetadata
+
+  if md.extra != nil {
+    extra = make([]KeyValueMetadata,len(md.extra),len(md.extra))
+    copy(extra,md.extra)
+  }
+  return &GangliaMetadata{
+    Type:md.Type,
+    Name:md.Name,
+    Units:md.Units,
+    Slope:md.Slope,
+    Tmax:md.Tmax,
+    Dmax:md.Dmax,
+    extra:extra,
+    metric_id:md.metric_id,
+  }
+}
+
+// A metadata defintion update message from or to
+// another ganglia agent.
 type GangliaMetadataDef struct {
-  gangliaBaseMessage
+  gangliaMsg
   *GangliaMetricId
   metric GangliaMetadata
 }
 
+// Returns the canonical metric id of a metadata update
+func (mdef *GangliaMetadataDef) MetricId() (*GangliaMetricId) {
+  if mdef.metric.metric_id != nil {
+    return mdef.metric.metric_id
+  }
+  return mdef.GangliaMetricId
+}
+
 func (mdef *GangliaMetadataDef) HasMetadata() bool {
+  return true
+}
+
+func (mdef *GangliaMetadataDef) IsMetadataDef() bool {
   return true
 }
 
@@ -205,12 +246,25 @@ func (mdef *GangliaMetadataDef) GetMetadata() *GangliaMetadata {
   return &mdef.metric
 }
 
+func (mdef *GangliaMetadataDef) IsRequest() bool {
+  return false
+}
+
+// Request metadata update form an agent.
 type GangliaMetadataReq struct {
-  gangliaBaseMessage
+  gangliaMsg
   *GangliaMetricId
 }
 
+func (mreq *GangliaMetadataReq) IsRequest() bool {
+  return true
+}
+
 func (mreq *GangliaMetadataReq) HasMetadata() bool {
+  return false
+}
+
+func (mreq *GangliaMetadataReq) IsMetadataDef() bool {
   return false
 }
 
@@ -219,8 +273,8 @@ func (mreq *GangliaMetadataReq) GetMetadata() *GangliaMetadata {
 }
 
 type gmetric struct {
-  gangliaBaseMessage
-  *GangliaMetricId
+  gangliaMsg
+  GangliaMetricId
   fmt string
   value reflect.Value
   metadata interface{}
@@ -240,32 +294,49 @@ func (m *gmetric) GetMetadata() (md *GangliaMetadata) {
   return
 }
 
+func (m *gmetric) IsRequest() bool {
+  return false
+}
+
 func (m *gmetric) MetricId() (*GangliaMetricId) {
-  return m.GangliaMetricId
+  return &m.GangliaMetricId
 }
 
 func (m *gmetric) SetFormat(f []byte) {
   m.fmt = string(f)
 }
 
+type valueTypes interface {
+  Elem() reflect.Value
+  CanSet() bool
+  CanInterface() bool
+  CanAddr() bool
+}
+
 func (m *gmetric) setvalue(v interface{}) (err error) {
-  t := reflect.TypeOf(v)
+  var t reflect.Type
+  var V reflect.Value
+  V,ok := v.(reflect.Value)
+  if !ok {
+    V = reflect.ValueOf(v)
+  }
+
+  t = V.Type()
   id,ok := revFormatMap[t.Kind()]
-  if !ok || id != m.Id() {
+  if !ok || id != m.FormatId() {
     if !ok {
       err = fmt.Errorf("Type of %v (%v) does not match kind %v",v,t,t.Kind())
     } else {
       err = fmt.Errorf("Ganglia type identifier %v does not match %v/%v",
-                       m.Id(),id,t.Kind())
+                       m.FormatId(),id,t.Kind())
     }
-    //err = GMetricTypeError
     return
   }
 
   if !m.value.IsValid() {
-    m.value = valueof(v)
+    m.value = V
   } else {
-    m.value.Set(valueof(v))
+    m.value.Set(V)
   }
   if m.fmt == "" {
     m.fmt = "%v"
@@ -284,20 +355,34 @@ func (m *gmetric) IsKind(kinds ...reflect.Kind) (ok bool) {
   return
 }
 
+// Return the anonymous value of a metric.
 func (m *gmetric) GetValue() reflect.Value {
   return m.value
 }
 
+// Create a new ganglia metric using the specified format and
+// with the parameters specified in a GMetricInfo structure.
 func NewMetric(format GangliaMsgFormat, info ...GMetricInfo) (gm GMetric, err error) {
-  m := &gmetric{GangliaMetricId:&GangliaMetricId{},
-               gangliaBaseMessage:gangliaBaseMessage{formatIdentifier:format}}
-
+  var mid GangliaMetricId
   for _,i := range info {
-    if i.Host != nil && i.Name != nil {
-      m.Host = string(i.Host)
-      m.Name = string(i.Name)
-      m.Spoof = i.Spoof
+    if i.Name != nil {
+      mid.Name = string(i.Name)
+      mid.Spoof = i.Spoof
+      mid.Exists = true
     }
+    if i.Host != nil {
+      mid.Host = string(i.Host)
+      mid.Spoof = i.Spoof
+      mid.Exists = true
+    }
+  }
+  if !mid.Exists {
+    err = fmt.Errorf("no valid metric id for %v", format)
+    return
+  }
+  m := &gmetric{GangliaMetricId:mid,
+                gangliaMsg:gangliaMsg{formatIdentifier:format}}
+  for _,i := range info {
     if i.Value != nil {
       err = m.setvalue(i.Value)
       if err != nil {
@@ -314,17 +399,17 @@ func NewMetric(format GangliaMsgFormat, info ...GMetricInfo) (gm GMetric, err er
   return
 }
 
+// Returns a printable "xmlish" form of a ganglia metric including
+// any associated basic metadata.
 func (m *gmetric) String() string {
-  var metric string = m.Id().String()
+  var metric string = m.FormatId().String()
   var attrs []string
   var metadata *GangliaMetadata
 
   metadata = m.GetMetadata()
 
-  if m.GangliaMetricId.Exists && m.GangliaMetricId.Name != "" && (metadata == nil || metadata.Name == "") {
+  if m.GangliaMetricId.Exists && m.GangliaMetricId.Name != "" {
     attrs = append(attrs, fmt.Sprintf("name=\"%s\"",m.GangliaMetricId.Name))
-  } else if metadata != nil && metadata.Name != "" {
-    attrs = append(attrs, fmt.Sprintf("name=\"%s\"",metadata.Name))
   }
 
   if m.GangliaMetricId.Exists && m.GangliaMetricId.Host != "" {
@@ -340,19 +425,16 @@ func (m *gmetric) String() string {
     }
 
     attrs = append(attrs, fmt.Sprintf(f,m.value.Interface()))
+  }
 
-    if metadata == nil || metadata.Type == "" {
-      t := m.value.Type()
-      if t != nil {
-        attrs = append(attrs, fmt.Sprintf("type=\"%v\"",t))
-      }
-    }
+  t := m.value.Type()
+  if metadata != nil && metadata.Type != "" {
+    attrs = append(attrs, fmt.Sprintf("type=\"%s\"",metadata.Type))
+  } else if t != nil {
+    attrs = append(attrs, fmt.Sprintf("type=\"%v\"",t))
   }
 
   if metadata != nil {
-    if metadata.Type != "" {
-      attrs = append(attrs, fmt.Sprintf("type=\"%s\"",metadata.Type))
-    }
     if metadata.Units != "" {
       attrs = append(attrs, fmt.Sprintf("units=\"%s\"",metadata.Units))
     }
@@ -366,9 +448,65 @@ func (m *gmetric) String() string {
   return "<" + metric + " " + strings.Join(attrs," ") + "/>"
 }
 
+// Start a simple network client which will pass packets to
+// an xdr decoder.
+func Client(addr string, mcast bool, xdr_chan chan []byte) {
+  wg := sync.WaitGroup{}
+
+  maddr,err := net.ResolveUDPAddr("udp4",addr)
+  if err != nil {
+    log.Fatalf("cannot resolve %v",addr,err)
+  }
+  wg.Add(1)
+  defer close(xdr_chan)
+  defer wg.Wait()
+  go func(addr *net.UDPAddr) {
+    var conn *net.UDPConn
+    var err error
+
+    defer wg.Done()
+    defer func() {
+      err := recover()
+      if err != nil {
+        log.Fatalf("CLIENT PANIC: %v",err)
+      }
+    }()
+
+    if mcast {
+      conn,err = net.ListenMulticastUDP("udp4",nil,addr)
+    } else {
+      conn,err = net.ListenUDP("udp4",addr)
+    }
+    if err != nil {
+      log.Printf("network failure during listen: %v", err)
+      return
+    }
+    log.Printf("Now listening for packets on %v", addr)
+    defer conn.Close()
+    for cnt := int(1); cnt > 0; cnt++ {
+      var buf []byte = make([]byte, 1500)
+      nbytes, saddr, err := conn.ReadFromUDP(buf)
+      _ = saddr
+      if err != nil {
+        log.Printf("%d: read socket failure: %v", cnt, err)
+        return
+      }
+      // log.Printf("%d: socket read: %v/%v bytes from %v",cnt,nbytes,len(buf),saddr)
+      if nbytes > 0 {
+        xdr_chan <- buf[:nbytes]
+      }
+    }
+  }(maddr)
+}
+
+/*
 func main() {
-  metric,err := NewMetric(GMETRIC_FLOAT,GMetricInfo{
-      Value: float32(4.4),
+  var c chan []byte = make(chan []byte,1)
+  var msgchan chan GangliaMetadataMessage
+
+  metric,err := NewMetric(GMETRIC_DOUBLE,GMetricInfo{
+      Name: []byte("cheese"),
+      Value: ConstGangliaValue(GANGLIA_VALUE_DOUBLE,1),
       Format: "%0.5f",
     })
   if err != nil {
@@ -382,4 +520,34 @@ func main() {
                         Units: "fucks/sec",
                     }
   log.Printf("hi: %v",metric)
+  log.Printf("  ... hmmmmm value: %v", GANGLIA_VALUE_UNSIGNED_SHORT)
+
+  msgchan = make(chan GangliaMetadataMessage,32)
+  go func() {
+    for {
+      select {
+      case msg := <-msgchan:
+        if msg.IsMetadataDef() {
+          md := msg.GetMetadata()
+          //if md.metric_id == nil {
+            md.metric_id = msg.MetricId()
+          //}
+          _,err := GangliaMetadataServer.Register(md)
+
+          if err != nil {
+            log.Printf("METADATA ERROR: %v", err)
+          }
+        } else {
+          log.Printf("GOT %v",msg)
+        }
+      }
+    }
+  }()
+  err = StartSocketReader(c,nil,msgchan)
+  if err != nil {
+    log.Fatalf("StartSocketReader: %v", err)
+  }
+  //server("0.0.0.0:8749",false,c)
+  server("239.2.11.71:8649",true,c)
 }
+*/
