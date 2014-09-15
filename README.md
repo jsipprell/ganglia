@@ -72,7 +72,7 @@ func main() {
           md := msg.GetMetadata()
           _,err := ganglia.GangliaMetadataServer.Register(md)
           if err != nil {
-            log.Printf("metadata server error %v",err)
+            log.Printf("metadata server error on %v: %v",md,err)
           }
         } else {
           log.Println(msg.String())
@@ -80,7 +80,7 @@ func main() {
       }
     }
   }()
-  err := gangliaStartXDRDecoder(c,nil,msgchan)
+  err := ganglia.StartXDRDecoder(c,nil,msgchan)
   if err != nil {
     log.Fatalf("cannot start xdr decoder: %v",err)
   }
