@@ -17,43 +17,34 @@ import (
 )
 
 var (
-  formatMap map[GangliaMsgFormat] reflect.Kind
-  revFormatMap map[reflect.Kind] GangliaMsgFormat
-  GMetricTypeError = errors.New("Type does not match gmetric")
+  typeMap map[GangliaMsgFormat] reflect.Kind
+  revTypeMap map[reflect.Kind] GangliaMsgFormat
+  GMetricTypeError = errors.New("Type not compatible with gmetric type")
 )
 
 func init() {
-  formatMap = make(map[GangliaMsgFormat] reflect.Kind)
-  revFormatMap = make(map[reflect.Kind] GangliaMsgFormat)
+  typeMap = make(map[GangliaMsgFormat] reflect.Kind)
+  revTypeMap = make(map[reflect.Kind] GangliaMsgFormat)
 
-  formatMap[GMETRIC_USHORT] = reflect.Uint16
-  revFormatMap[reflect.Uint16] = GMETRIC_USHORT
-  formatMap[GMETRIC_SHORT] = reflect.Int16
-  revFormatMap[reflect.Int16] = GMETRIC_SHORT
-  formatMap[GMETRIC_INT] = reflect.Int32
-  revFormatMap[reflect.Int32] = GMETRIC_INT
-  revFormatMap[reflect.Int] = GMETRIC_INT
-  formatMap[GMETRIC_UINT] = reflect.Uint32
-  revFormatMap[reflect.Uint32] = GMETRIC_UINT
-  revFormatMap[reflect.Uint] = GMETRIC_UINT
-  formatMap[GMETRIC_STRING] = reflect.String
-  revFormatMap[reflect.String] = GMETRIC_STRING
-  formatMap[GMETRIC_FLOAT] = reflect.Float32
-  revFormatMap[reflect.Float32] = GMETRIC_FLOAT
-  formatMap[GMETRIC_DOUBLE] = reflect.Float64
-  revFormatMap[reflect.Float64] = GMETRIC_DOUBLE
+  typeMap[GMETRIC_USHORT] = reflect.Uint16
+  revTypeMap[reflect.Uint16] = GMETRIC_USHORT
+  typeMap[GMETRIC_SHORT] = reflect.Int16
+  revTypeMap[reflect.Int16] = GMETRIC_SHORT
+  typeMap[GMETRIC_INT] = reflect.Int32
+  revTypeMap[reflect.Int32] = GMETRIC_INT
+  revTypeMap[reflect.Int] = GMETRIC_INT
+  typeMap[GMETRIC_UINT] = reflect.Uint32
+  revTypeMap[reflect.Uint32] = GMETRIC_UINT
+  revTypeMap[reflect.Uint] = GMETRIC_UINT
+  typeMap[GMETRIC_STRING] = reflect.String
+  revTypeMap[reflect.String] = GMETRIC_STRING
+  typeMap[GMETRIC_FLOAT] = reflect.Float32
+  revTypeMap[reflect.Float32] = GMETRIC_FLOAT
+  typeMap[GMETRIC_DOUBLE] = reflect.Float64
+  revTypeMap[reflect.Float64] = GMETRIC_DOUBLE
 }
 
-func valueof(v interface{}) reflect.Value {
-  v1 := reflect.ValueOf(v)
-  for v2 := reflect.Zero(reflect.TypeOf(v)); v1 != v2; v1 = reflect.Indirect(v2) {
-    v2 = v1
-  }
-
-  return v1
-}
-
-// For use when constructing new metrics, all fields are optional.
+// For use when constructing new metrics via NewMetric, all fields are optional.
 type GMetricInfo struct {
   Value interface{}
   Format string
@@ -68,10 +59,14 @@ type GangliaMetricType interface {
 }
 
 // All ganglia messages have an associated format identifer
-type GangliaMessage interface {
+type GangliaIdentifier interface {
   FormatId() GangliaMsgFormat
 }
 
+// All ganglia objects that can be queried about metadata requests,
+// whether they contain their own metadata or whether they define
+// metadata. Finally, GetMetadata() can be used to acquire any
+// such metadata
 type GangliaMetadataHandler interface {
   IsRequest() bool
   HasMetadata() bool
@@ -79,13 +74,17 @@ type GangliaMetadataHandler interface {
   GetMetadata() *GangliaMetadata
 }
 
-type GangliaMetadataMessage interface {
+// The basic interface all messages will support when spit out
+// by the xdr decoder.
+type GangliaMessage interface {
   GangliaMetadataHandler
   FormatId() GangliaMsgFormat
   MetricId() *GangliaMetricId
 }
 
-// The basic metric interface.
+// All ganglia objects that contain actual metrics (rather than
+// separate metadata definitions or requests) will support this
+// interface.
 type GMetric interface {
   GangliaMetadataHandler
   FormatId() GangliaMsgFormat
@@ -114,17 +113,14 @@ type gangliaMsg struct {
   formatIdentifier GangliaMsgFormat
 }
 
-// Returns the canonical format id for any ganglia object
 func (msg gangliaMsg) FormatId() (GangliaMsgFormat) {
   return msg.formatIdentifier
 }
 
-// Returns a printable version of a ganglia message id
 func (msg gangliaMsg) String() (string) {
   return msg.formatIdentifier.String()
 }
 
-// Returns true if the object is metadata defintiion.
 func (msg *gangliaMsg) IsMetadataDef() bool {
   return false
 }
@@ -180,7 +176,7 @@ type KeyValueMetadata interface {
   ValueFor(string) (string, error)
 }
 
-// Basic ganglia metadata.
+// Basic ganglia metadata strucutre.
 type GangliaMetadata struct {
   Type string
   Name string
@@ -193,7 +189,7 @@ type GangliaMetadata struct {
 }
 
 // Create a unique copy of some piece of metadata.
-// Note that the metric id is never copied and shared
+// Note that the metric id is never copied and always shared
 // by all copies.
 func (md *GangliaMetadata) copy() (*GangliaMetadata) {
   var extra []KeyValueMetadata
@@ -230,40 +226,48 @@ func (mdef *GangliaMetadataDef) MetricId() (*GangliaMetricId) {
   return mdef.GangliaMetricId
 }
 
+// Always returns true for a metdadate definition/update.
 func (mdef *GangliaMetadataDef) HasMetadata() bool {
   return true
 }
 
+// Always returns true for a metdadate definition/update.
 func (mdef *GangliaMetadataDef) IsMetadataDef() bool {
   return true
 }
 
+// Returns the actual metadata from a definition/update
 func (mdef *GangliaMetadataDef) GetMetadata() *GangliaMetadata {
   return &mdef.metric
 }
 
+// Always returns false for a metadata definition/update
 func (mdef *GangliaMetadataDef) IsRequest() bool {
   return false
 }
 
-// Request metadata update form an agent.
+// Requests metadata update from an agent.
 type GangliaMetadataReq struct {
   gangliaMsg
   *GangliaMetricId
 }
 
+// Always returns true for a metadata request
 func (mreq *GangliaMetadataReq) IsRequest() bool {
   return true
 }
 
+// Always returns false for a metadata request
 func (mreq *GangliaMetadataReq) HasMetadata() bool {
   return false
 }
 
+// Always returns false for a metadata request
 func (mreq *GangliaMetadataReq) IsMetadataDef() bool {
   return false
 }
 
+// Requests never have any metadata thus this will return nil.
 func (mreq *GangliaMetadataReq) GetMetadata() *GangliaMetadata {
   return nil
 }
@@ -276,6 +280,9 @@ type gmetric struct {
   metadata interface{}
 }
 
+// Returns true if a metric has associated metadata. Metadata
+// is automatically associated when available via the metadata
+// server.
 func (m *gmetric) HasMetadata() (r bool) {
   if m.metadata != nil {
     r = true
@@ -283,6 +290,7 @@ func (m *gmetric) HasMetadata() (r bool) {
   return
 }
 
+// Returns the metadata associated with a metric.
 func (m *gmetric) GetMetadata() (md *GangliaMetadata) {
   if m.metadata != nil {
     md = m.metadata.(*GangliaMetadata)
@@ -290,14 +298,18 @@ func (m *gmetric) GetMetadata() (md *GangliaMetadata) {
   return
 }
 
+// Always returns false for a ganglia metric.
 func (m *gmetric) IsRequest() bool {
   return false
 }
 
+// Return the canonical metric id.
 func (m *gmetric) MetricId() (*GangliaMetricId) {
   return &m.GangliaMetricId
 }
 
+// Set the printf() style format string. Empty
+// strings or nil will use "%v" from go parlance.
 func (m *gmetric) SetFormat(f []byte) {
   m.fmt = string(f)
 }
@@ -309,6 +321,8 @@ type valueTypes interface {
   CanAddr() bool
 }
 
+// Coerce a go value to fit a metric type. Retunrs
+// an error if this is not possible.
 func (m *gmetric) setvalue(v interface{}) (err error) {
   var t reflect.Type
   var V reflect.Value
@@ -318,7 +332,7 @@ func (m *gmetric) setvalue(v interface{}) (err error) {
   }
 
   t = V.Type()
-  id,ok := revFormatMap[t.Kind()]
+  id,ok := revTypeMap[t.Kind()]
   if !ok || id != m.FormatId() {
     if !ok {
       err = fmt.Errorf("Type of %v (%v) does not match kind %v",v,t,t.Kind())
@@ -340,6 +354,8 @@ func (m *gmetric) setvalue(v interface{}) (err error) {
   return
 }
 
+// Test a series of go type kinds to see if any of them
+// are compatible with a metric.
 func (m *gmetric) IsKind(kinds ...reflect.Kind) (ok bool) {
   kind := m.value.Kind()
   for _,k := range kinds {
@@ -351,7 +367,7 @@ func (m *gmetric) IsKind(kinds ...reflect.Kind) (ok bool) {
   return
 }
 
-// Return the anonymous value of a metric.
+// Return the anonymous value of a metric as a reflect.Value.
 func (m *gmetric) GetValue() reflect.Value {
   return m.value
 }
@@ -449,7 +465,7 @@ func (m *gmetric) String() string {
 func Client(addr string, mcast bool, xdr_chan chan []byte) {
   wg := sync.WaitGroup{}
 
-  maddr,err := net.ResolveUDPAddr("udp4",addr)
+  maddr,err := net.ResolveUDPAddr("udp",addr)
   if err != nil {
     log.Fatalf("cannot resolve %v",addr,err)
   }
@@ -469,9 +485,9 @@ func Client(addr string, mcast bool, xdr_chan chan []byte) {
     }()
 
     if mcast {
-      conn,err = net.ListenMulticastUDP("udp4",nil,addr)
+      conn,err = net.ListenMulticastUDP("udp",nil,addr)
     } else {
-      conn,err = net.ListenUDP("udp4",addr)
+      conn,err = net.ListenUDP("udp",addr)
     }
     if err != nil {
       log.Printf("network failure during listen: %v", err)
@@ -480,7 +496,7 @@ func Client(addr string, mcast bool, xdr_chan chan []byte) {
     log.Printf("Now listening for packets on %v", addr)
     defer conn.Close()
     for cnt := int(1); cnt > 0; cnt++ {
-      var buf []byte = make([]byte, 1500)
+      var buf []byte = make([]byte, GANGLIA_MAX_MESSAGE_LEN, GANGLIA_MAX_MESSAGE_LEN)
       nbytes, saddr, err := conn.ReadFromUDP(buf)
       _ = saddr
       if err != nil {
@@ -495,55 +511,4 @@ func Client(addr string, mcast bool, xdr_chan chan []byte) {
   }(maddr)
 }
 
-/*
-func main() {
-  var c chan []byte = make(chan []byte,1)
-  var msgchan chan GangliaMetadataMessage
-
-  metric,err := NewMetric(GMETRIC_DOUBLE,GMetricInfo{
-      Name: []byte("cheese"),
-      Value: ConstGangliaValue(GANGLIA_VALUE_DOUBLE,1),
-      Format: "%0.5f",
-    })
-  if err != nil {
-    log.Fatalf("cannot create new metric: %v", err)
-  }
-
-  log.Printf("hi: %v",metric)
-  m := metric.(*gmetric)
-  m.metadata = &GangliaMetadata{
-                        Name: "cheese",
-                        Units: "fucks/sec",
-                    }
-  log.Printf("hi: %v",metric)
-  log.Printf("  ... hmmmmm value: %v", GANGLIA_VALUE_UNSIGNED_SHORT)
-
-  msgchan = make(chan GangliaMetadataMessage,32)
-  go func() {
-    for {
-      select {
-      case msg := <-msgchan:
-        if msg.IsMetadataDef() {
-          md := msg.GetMetadata()
-          //if md.metric_id == nil {
-            md.metric_id = msg.MetricId()
-          //}
-          _,err := GangliaMetadataServer.Register(md)
-
-          if err != nil {
-            log.Printf("METADATA ERROR: %v", err)
-          }
-        } else {
-          log.Printf("GOT %v",msg)
-        }
-      }
-    }
-  }()
-  err = StartSocketReader(c,nil,msgchan)
-  if err != nil {
-    log.Fatalf("StartSocketReader: %v", err)
-  }
-  //server("0.0.0.0:8749",false,c)
-  server("239.2.11.71:8649",true,c)
-}
-*/
+// vi: set sts=2 sw=2 ai et tw=0 syntax=go:

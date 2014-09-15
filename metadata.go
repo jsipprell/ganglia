@@ -77,14 +77,12 @@ type metadataServer struct {
 
 var (
   GangliaMetadataServer metadataServer
-  GangliaMetadataNotFound error
-  uidMap map[int] uid
+  GangliaMetadataNotFound = errors.New("Ganglia metadata not found")
+  uidMap = make(map[int] uid)
   uidMutex sync.Mutex
 )
 
 func init() {
-  GangliaMetadataNotFound = errors.New("Ganglia metadata not found")
-  uidMap = make(map[int] uid)
   uidMap[0] = uid(0x43ff1)
 }
 
@@ -94,7 +92,7 @@ func uidGenerator(seed int) uid {
 
   last,ok := uidMap[seed]
   if !ok {
-    last = uid(seed)^0x43ff
+    last = uid(seed)^0x42
   }
   last++
   uidMap[seed] = last
@@ -155,11 +153,10 @@ func (s *metadataServer) start() {
       case registerMetadata:
         m := nr.(*regReq).metadata
         if m.metric_id == nil {
-          log.Fatalf("Attempt to register metadata without a metric id")
+          panic("Attempt to register metadata without a metric id")
         } else if m.metric_id.id != uid(0) {
           meta,ok = registry[m.metric_id.id]
           if !ok {
-            log.Printf("MAP: %v",idmap)
             log.Fatalf("Internal inconsistency, metric id (%v) not registered",m.metric_id.id)
           }
           nr.sendr(meta)
@@ -176,12 +173,10 @@ func (s *metadataServer) start() {
               metadata = append(metadata,*m)
               m = &(metadata[l])
               registry[id] = m
-              log.Printf("REGISTER: %v/%v: %v", name, id, m.Type)
+              //log.Printf("REGISTER: %v/%v: %v", name, id, m.Type)
               nr.sendr(m)
               continue
             }
-            log.Printf("MAP: %v",idmap)
-            log.Printf("META: %v",metadata)
             log.Fatalf("Internal inconsistency, metric id (%v/%v) not registered",id,m.metric_id.id)
           }
           m.metric_id = meta.metric_id
@@ -194,7 +189,7 @@ func (s *metadataServer) start() {
           metadata = append(metadata,*m)
           m = &(metadata[l])
           registry[id] = m
-          log.Printf("REGISTER: %v/%v: %v", name, id, m.Type)
+          //log.Printf("REGISTER: %v/%v: %v", name, id, m.Type)
           nr.sendr(m)
         }
       }
@@ -202,6 +197,9 @@ func (s *metadataServer) start() {
   }()
 }
 
+// Register new metadata with the metadata server so that it will auto-associate
+// with any metrics seen in the future. Registing pre-existing metadata is a no-op
+// but will not produce an error.
 func (s *metadataServer) Register(md *GangliaMetadata) (rmd *GangliaMetadata, err error) {
   s.starter.Do(s.start)
 
@@ -216,6 +214,9 @@ func (s *metadataServer) Register(md *GangliaMetadata) (rmd *GangliaMetadata, er
   return
 }
 
+// Lookup any metadata previously registered for a an object that can respond
+// validly to a MetricId() call. If no metadata is found, GangliaMetadataNotFound
+// is returned as an error.
 func (s *metadataServer) Lookup(obj GangliaMetricType) (md *GangliaMetadata, err error) {
   s.starter.Do(s.start)
 
