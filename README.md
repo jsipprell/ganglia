@@ -7,7 +7,7 @@ Currently this package only permits decoding of Ganglia XDR packets/streams as
 the immediate need was for decode only rather than encode. However, I fully
 intend to add an encoder in the near future.
 
-This package require cgo and an install libganglia (probably at least version
+This package requires cgo and an installed libganglia (probably at least version
 3.4.0).
 
 The package uses pkg-config however ganglia does *not*. To get around this a
@@ -22,7 +22,7 @@ Contents
 --------
 
 This package provides three main components, only one of which is technically
-required for metric decode functionality:
+required for basic metric decode functionality:
 
 1. An xdr decoder service started via ``StartXDRDecoder`` and
 stopped via ``StopXDRDecoder``.
@@ -45,6 +45,7 @@ import (
   "github.com/jsipprell/ganglia"
   "time"
   "log"
+  "os"
 )
 
 func main() {
