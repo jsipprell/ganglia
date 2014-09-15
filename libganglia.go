@@ -1,8 +1,7 @@
 package ganglia
 
 /*
-#cgo CFLAGS: -I/nm/local/include -I/usr/local/include
-#cgo LDFLAGS: -L/nm/local/lib64 -L/usr/local/lib64 -lganglia
+#cgo pkg-config: ganglia
 
 #include "helper.h"
 */
@@ -16,6 +15,7 @@ import (
   "sync"
   "unsafe"
   "errors"
+  "time"
 )
 
 // Matches ganglia/rrd slope types
@@ -572,8 +572,8 @@ func StartXDRDecoder(input <-chan []byte,
   dist := make(chan GangliaMetadataMessage,1)
   go func(inp <-chan GangliaMetadataMessage, outputs []chan GangliaMetadataMessage) {
     wg.Add(1)
-    defer wg.Done()
     defer wg.Wait()
+    defer wg.Done()
 
     defer func() {
       err := recover()
@@ -594,12 +594,12 @@ func StartXDRDecoder(input <-chan []byte,
         }
         return
       case msg := <-inp:
-        for i,c := range outputs {
+        for _,c := range outputs {
           if c != nil {
             select {
+            case <-time.After(time.Duration(100) * time.Millisecond):
+              panic("100ms timeout blocking on sending buffer to decoder(s)")
             case c <- msg:
-            default:
-              outputs[i] = nil
             }
           }
         }
@@ -617,8 +617,8 @@ func StartXDRDecoder(input <-chan []byte,
 
     _ = nbytes
     wg.Add(1)
-    defer wg.Done()
     defer wg.Wait()
+    defer wg.Done()
 
     defer func() {
       err := recover()
@@ -628,6 +628,9 @@ func StartXDRDecoder(input <-chan []byte,
     }()
 
     for {
+      if inbuf.Len() == 0 {
+        inbuf.Truncate(0)
+      }
       select {
       case msg = <-inp:
         if msg != nil {
@@ -636,24 +639,30 @@ func StartXDRDecoder(input <-chan []byte,
             log.Fatalf("pre-xdr input buffer: %v", err)
           }
         }
-        break
       case <-shutdown:
         return
       }
       l := inbuf.Len()
       if l > 0 {
-        outbuf := make([]byte,l,l)
-        l,_ = inbuf.Read(outbuf)
-        if l > 0 {
-          _ = locker
-          msg, nbytes, err := xdrCall(mainPool,outbuf)
+        if l > GANGLIA_MAX_MESSAGE_LEN {
+          log.Fatalf("input buffer exceeded maximum ganglia message length")
+        }
+
+        outbuf := inbuf.Bytes()
+        if len(outbuf) > 0 {
+          msg, nbytes, err := xdrCall(locker,outbuf)
           // log.Printf("msg=%v, nbytes=%v, err=%v",msg,nbytes,err)
           if err != nil {
             log.Fatalf("xdr decode error (%v/%v bytes): %v", l, nbytes, err)
           }
           if msg != nil {
-            outp <- msg
+            select {
+            case _ = <-time.After(time.Duration(500) * time.Millisecond):
+              log.Printf("WARNING: dropping message, output is blocking")
+            case outp <- msg:
+            }
           }
+          inbuf.Next(nbytes)
         }
       }
     }

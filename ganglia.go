@@ -1,14 +1,10 @@
 // go package to provide mechanism for decode and encode of
 // ganglia metrics. Uses cgo and requires libganglia.
+//
+// Jesse Sipprell <jessesipprell@gmail.com>
+//
+// Copyright 2014, All Rights Reserved
 package ganglia
-
-/*
-#cgo CFLAGS: -I/nm/local/include -I/usr/local/include
-#cgo LDFLAGS: -L/nm/local/lib64 -L/usr/local/lib64 -lganglia
-
-#include "helper.h"
-*/
-import "C"
 
 import (
   "net"

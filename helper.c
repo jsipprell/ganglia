@@ -7,6 +7,7 @@ size_t Ganglia_metadata_msg_size = sizeof(Ganglia_metadata_msg);
 size_t Ganglia_metadata_val_size = sizeof(Ganglia_value_msg);
 size_t XDR_size = sizeof(XDR);
 
+#if 0
 static void emit_debug(const char *s)
 {
   GoString msg;
@@ -16,10 +17,9 @@ static void emit_debug(const char *s)
   helper_debug(msg);
 }
 
-#if 0
-#define DEBUG(s) emit_debug((s))
+#define XDRDEBUG(s) emit_debug((s))
 #else
-#define DEBUG(s) (void)s
+#define XDRDEBUG(s) (void)s
 #endif
 
 void sanitize_metric_name(char *metric_name, int is_spoof_msg)
@@ -57,7 +57,7 @@ bool_t helper_init_xdr(XDR *x, Ganglia_msg_formats *id)
   ok = xdr_Ganglia_msg_formats(x,id);
   xdr_setpos(x,save);
   if(ok)
-    DEBUG("xdr init ok");
+    XDRDEBUG("xdr init ok");
   return ok;
 }
 
@@ -150,7 +150,7 @@ size_t helper_perform_xdr(XDR *x, Ganglia_metadata_msg *fmsg,
   bool_t ret;
   int count = 0;
 
-  DEBUG("starting xdr 1");
+  XDRDEBUG("starting xdr 1");
   memset(fmsg, 0, sizeof(Ganglia_metadata_msg));
   memset(vmsg, 0, sizeof(Ganglia_value_msg));
 
@@ -193,11 +193,11 @@ size_t helper_perform_xdr(XDR *x, Ganglia_metadata_msg *fmsg,
       }
       break;
     default:
-      DEBUG(buf);
-      DEBUG("bad id");
+      XDRDEBUG(buf);
+      XDRDEBUG("bad id");
       break;
   }
   sprintf(buf,"finished xdr, count=%d, bytes=%d",count,xdr_getpos(x)-pos);
-  DEBUG(buf);
+  XDRDEBUG(buf);
   return xdr_getpos(x) - pos;
 }
