@@ -16,49 +16,49 @@ import (
 )
 
 // Matches ganglia/rrd slope types
-type GangliaSlope uint
+type Slope uint
 const (
-  GANGLIA_SLOPE_ZERO          GangliaSlope = C.GANGLIA_SLOPE_ZERO
-  GANGLIA_SLOPE_POSITIVE      GangliaSlope = C.GANGLIA_SLOPE_POSITIVE
-  GANGLIA_SLOPE_NEGATIVE      GangliaSlope = C.GANGLIA_SLOPE_NEGATIVE
-  GANGLIA_SLOPE_BOTH          GangliaSlope = C.GANGLIA_SLOPE_BOTH
-  GANGLIA_SLOPE_UNSPECIFIED   GangliaSlope = C.GANGLIA_SLOPE_UNSPECIFIED
-  GANGLIA_SLOPE_DERIVATIVE    GangliaSlope = C.GANGLIA_SLOPE_DERIVATIVE
+  SLOPE_ZERO          Slope = C.GANGLIA_SLOPE_ZERO
+  SLOPE_POSITIVE      Slope = C.GANGLIA_SLOPE_POSITIVE
+  SLOPE_NEGATIVE      Slope = C.GANGLIA_SLOPE_NEGATIVE
+  SLOPE_BOTH          Slope = C.GANGLIA_SLOPE_BOTH
+  SLOPE_UNSPECIFIED   Slope = C.GANGLIA_SLOPE_UNSPECIFIED
+  SLOPE_DERIVATIVE    Slope = C.GANGLIA_SLOPE_DERIVATIVE
 )
 
 // The maximum possible size of a ganglia packet per libganglia.
 const GANGLIA_MAX_MESSAGE_LEN int = C.GANGLIA_MAX_MESSAGE_LEN
 
 // All the ganglia packet types as of Ganglia 3.7.0
-type GangliaMsgFormat uint16
+type MsgFormat uint16
 const (
-  GMETADATA_FULL             GangliaMsgFormat = C.gmetadata_full
-  GMETRIC_USHORT             GangliaMsgFormat = C.gmetric_ushort
-  GMETRIC_SHORT              GangliaMsgFormat = C.gmetric_short
-  GMETRIC_INT                GangliaMsgFormat = C.gmetric_int
-  GMETRIC_UINT               GangliaMsgFormat = C.gmetric_uint
-  GMETRIC_STRING             GangliaMsgFormat = C.gmetric_string
-  GMETRIC_FLOAT              GangliaMsgFormat = C.gmetric_float
-  GMETRIC_DOUBLE             GangliaMsgFormat = C.gmetric_double
-  GMETADATA_REQUEST          GangliaMsgFormat = C.gmetadata_request
+  GMETADATA_FULL             MsgFormat = C.gmetadata_full
+  GMETRIC_USHORT             MsgFormat = C.gmetric_ushort
+  GMETRIC_SHORT              MsgFormat = C.gmetric_short
+  GMETRIC_INT                MsgFormat = C.gmetric_int
+  GMETRIC_UINT               MsgFormat = C.gmetric_uint
+  GMETRIC_STRING             MsgFormat = C.gmetric_string
+  GMETRIC_FLOAT              MsgFormat = C.gmetric_float
+  GMETRIC_DOUBLE             MsgFormat = C.gmetric_double
+  GMETADATA_REQUEST          MsgFormat = C.gmetadata_request
 )
 
 // All the ganglia value types supported as of Ganglia 3.7.0
-type GangliaValueType int8
+type ValueType int8
 const (
-  GANGLIA_VALUE_UNKNOWN         GangliaValueType = C.GANGLIA_VALUE_UNKNOWN
-  GANGLIA_VALUE_STRING          GangliaValueType = C.GANGLIA_VALUE_STRING
-  GANGLIA_VALUE_UNSIGNED_SHORT  GangliaValueType = C.GANGLIA_VALUE_UNSIGNED_SHORT
-  GANGLIA_VALUE_SHORT           GangliaValueType = C.GANGLIA_VALUE_SHORT
-  GANGLIA_VALUE_UNSIGNED_INT    GangliaValueType = C.GANGLIA_VALUE_UNSIGNED_INT
-  GANGLIA_VALUE_INT             GangliaValueType = C.GANGLIA_VALUE_INT
-  GANGLIA_VALUE_FLOAT           GangliaValueType = C.GANGLIA_VALUE_FLOAT
-  GANGLIA_VALUE_DOUBLE          GangliaValueType = C.GANGLIA_VALUE_DOUBLE
+  VALUE_UNKNOWN         ValueType = C.GANGLIA_VALUE_UNKNOWN
+  VALUE_STRING          ValueType = C.GANGLIA_VALUE_STRING
+  VALUE_UNSIGNED_SHORT  ValueType = C.GANGLIA_VALUE_UNSIGNED_SHORT
+  VALUE_SHORT           ValueType = C.GANGLIA_VALUE_SHORT
+  VALUE_UNSIGNED_INT    ValueType = C.GANGLIA_VALUE_UNSIGNED_INT
+  VALUE_INT             ValueType = C.GANGLIA_VALUE_INT
+  VALUE_FLOAT           ValueType = C.GANGLIA_VALUE_FLOAT
+  VALUE_DOUBLE          ValueType = C.GANGLIA_VALUE_DOUBLE
 )
 
 // Represents go access to libganglia/apr memory pools. Not required
 // for simple xdr ganglia metric decoding.
-type GangliaPool struct {
+type Pool struct {
   mutex *sync.Mutex
   c *C.struct_Ganglia_pool
   refcnt uint
@@ -72,26 +72,26 @@ type poolRequest struct {
 
 type poolManager struct {
   reqPool chan poolRequest
-  releasePool chan *GangliaPool
-  rootPool *GangliaPool
+  releasePool chan *Pool
+  rootPool *Pool
 }
 
 var (
-  gangliaValueTypeMap map[GangliaValueType] reflect.Type
+  valueTypeMap map[ValueType] reflect.Type
   GangliaValueTypeError = errors.New("Unknown ganglia value type")
 )
 
 func init() {
-  gangliaValueTypeMap = make(map[GangliaValueType] reflect.Type)
+  valueTypeMap = make(map[ValueType] reflect.Type)
 
-  gangliaValueTypeMap[GANGLIA_VALUE_UNKNOWN] = reflect.TypeOf(nil)
-  gangliaValueTypeMap[GANGLIA_VALUE_STRING] = reflect.TypeOf(string(""))
-  gangliaValueTypeMap[GANGLIA_VALUE_UNSIGNED_SHORT] = reflect.TypeOf(uint16(0))
-  gangliaValueTypeMap[GANGLIA_VALUE_SHORT] = reflect.TypeOf(int16(0))
-  gangliaValueTypeMap[GANGLIA_VALUE_UNSIGNED_INT] = reflect.TypeOf(uint32(0))
-  gangliaValueTypeMap[GANGLIA_VALUE_INT] = reflect.TypeOf(int32(0))
-  gangliaValueTypeMap[GANGLIA_VALUE_FLOAT] = reflect.TypeOf(float32(0))
-  gangliaValueTypeMap[GANGLIA_VALUE_DOUBLE] = reflect.TypeOf(float64(0))
+  valueTypeMap[VALUE_UNKNOWN] = reflect.TypeOf(nil)
+  valueTypeMap[VALUE_STRING] = reflect.TypeOf(string(""))
+  valueTypeMap[VALUE_UNSIGNED_SHORT] = reflect.TypeOf(uint16(0))
+  valueTypeMap[VALUE_SHORT] = reflect.TypeOf(int16(0))
+  valueTypeMap[VALUE_UNSIGNED_INT] = reflect.TypeOf(uint32(0))
+  valueTypeMap[VALUE_INT] = reflect.TypeOf(int32(0))
+  valueTypeMap[VALUE_FLOAT] = reflect.TypeOf(float32(0))
+  valueTypeMap[VALUE_DOUBLE] = reflect.TypeOf(float64(0))
 }
 
 //export helper_debug
@@ -99,16 +99,16 @@ func helper_debug(msg string) {
   log.Printf(msg)
 }
 
-func (vt GangliaValueType) String() string {
-  T,ok := gangliaValueTypeMap[vt]
+func (vt ValueType) String() string {
+  T,ok := valueTypeMap[vt]
   if !ok {
     return "ganglia_value_invalid"
   }
   return "ganglia_value_" + T.String()
 }
 
-func getGangliaValueKind(t GangliaValueType) (kind reflect.Kind, err error) {
-  typ,ok := gangliaValueTypeMap[t]
+func getGangliaValueKind(t ValueType) (kind reflect.Kind, err error) {
+  typ,ok := valueTypeMap[t]
   if ok {
     kind = typ.Kind()
   } else {
@@ -117,8 +117,8 @@ func getGangliaValueKind(t GangliaValueType) (kind reflect.Kind, err error) {
   return
 }
 
-func getGangliaValueType(t GangliaValueType) (T reflect.Type, err error) {
-  typ,ok := gangliaValueTypeMap[t]
+func getGangliaValueType(t ValueType) (T reflect.Type, err error) {
+  typ,ok := valueTypeMap[t]
   if ok {
     T = typ
   } else {
@@ -129,7 +129,7 @@ func getGangliaValueType(t GangliaValueType) (T reflect.Type, err error) {
 
 // convert any value to the appropriate ganglia value type and return a generic
 // Value or error if the conversion isn't possible.
-func NewGangliaValue(t GangliaValueType, v interface{}) (V reflect.Value, err error) {
+func NewValue(t ValueType, v interface{}) (V reflect.Value, err error) {
   T,err := getGangliaValueType(t)
   if err != nil {
     return
@@ -145,8 +145,8 @@ func NewGangliaValue(t GangliaValueType, v interface{}) (V reflect.Value, err er
 
 // Create a new contstant ganglia value from any compatible go type.
 // This should ONLY be used on immutable values.
-func ConstGangliaValue(t GangliaValueType, v interface{}) reflect.Value {
-  V,err := NewGangliaValue(t,v)
+func ConstValue(t ValueType, v interface{}) reflect.Value {
+  V,err := NewValue(t,v)
   if err != nil {
     panic(fmt.Sprintf("cannot create constant: %v",err))
   }
@@ -155,16 +155,16 @@ func ConstGangliaValue(t GangliaValueType, v interface{}) reflect.Value {
 
 var (
   mainPoolManager *poolManager
-  mainPool *GangliaPool
+  mainPool *Pool
   startup sync.Once
 )
 
-func (pool GangliaPool) Lock() {
+func (pool Pool) Lock() {
   //log.Printf("%v LOCK",pool)
   pool.mutex.Lock()
 }
 
-func (pool GangliaPool) Unlock() {
+func (pool Pool) Unlock() {
   //log.Printf("%v UNLOCK",pool)
   pool.mutex.Unlock()
 }
@@ -172,11 +172,11 @@ func (pool GangliaPool) Unlock() {
 // Runs the pool manager
 func (p *poolManager) run(started chan struct{}) {
   var count uint
-  var pool GangliaPool
+  var pool Pool
   var wg sync.WaitGroup
 
   p.reqPool = make(chan poolRequest,1)
-  p.releasePool = make(chan *GangliaPool,5)
+  p.releasePool = make(chan *Pool,5)
   wg.Add(1)
   go func(parent *C.struct_Ganglia_pool) {
     defer wg.Done()
@@ -226,7 +226,7 @@ func (p *poolManager) run(started chan struct{}) {
         newpool = C.Ganglia_pool_create(parent)
       }(pool.c,&req)
     case relpool := <-p.releasePool:
-      go func(pool *GangliaPool, p *C.struct_Ganglia_pool) {
+      go func(pool *Pool, p *C.struct_Ganglia_pool) {
         relpool.Lock()
         defer relpool.Unlock()
         defer func() {
@@ -246,7 +246,7 @@ func (p *poolManager) run(started chan struct{}) {
 func startupPools() (ok bool) {
   startup.Do(func() {
     mainPoolManager = &poolManager{}
-    mainPool = &GangliaPool{
+    mainPool = &Pool{
       manager: mainPoolManager,
       notify: make(chan *C.struct_Ganglia_pool, 1),
       mutex: new(sync.Mutex),
@@ -280,8 +280,8 @@ func(p *poolManager) Unlock() {
 
 // Creates a new ganglia memory pool. Not required for
 // basic xdr decoding.
-func CreatePool() (pool *GangliaPool, err error) {
-  pool = &GangliaPool{
+func CreatePool() (pool *Pool, err error) {
+  pool = &Pool{
     manager: getPoolManager(),
     notify: make(chan *C.struct_Ganglia_pool,1),
     mutex: new(sync.Mutex),

@@ -29,8 +29,8 @@ stopped via ``StopXDRDecoder``.
 1. A metadata service which can collect parsed metadata packets from gmond
 and auto-associate metrics with metadata (once the metadata has been seen).
 This service is started automatically when the first metadata request
-or registration is perfomed. See ``GangliaMetadataServer.Lookup`` and
-``GangliaMetadataService.Register``.
+or registration is perfomed. See ``MetadataServer.Lookup`` and
+``MetadataService.Register``.
 1. A simple udp network client that can stream received packets to the xdr
 decoder. This is provided as more of an example and will likely be replaced
 by something application-specific.
@@ -52,7 +52,7 @@ func main() {
   // create the main byte stream packet channel
   c := make(chan []byte,1)
   // the message channel to feed us decoded ganglia messages
-  msgchan := make(chan ganglia.GangliaMessage)
+  msgchan := make(chan ganglia.Message)
 
   go func() {
     defer func() {
@@ -70,7 +70,7 @@ func main() {
       case msg := <-msgchan:
         if msg.IsMetadataDef() {
           md := msg.GetMetadata()
-          _,err := ganglia.GangliaMetadataServer.Register(md)
+          _,err := ganglia.MetadataServer.Register(md)
           if err != nil {
             log.Printf("metadata server error on %v: %v",md,err)
           }

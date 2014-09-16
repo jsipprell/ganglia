@@ -16,24 +16,24 @@ const (
 
 type requestType interface {
   which() (reqtype)
-  getr() (<-chan *GangliaMetadata)
-  sendr(msg *GangliaMetadata)
+  getr() (<-chan *Metadata)
+  sendr(msg *Metadata)
 }
 
 type response struct {
   t reqtype
-  r chan *GangliaMetadata
+  r chan *Metadata
 }
 
 func (r *response) which() (reqtype) {
   return r.t
 }
 
-func (r *response) getr() (<-chan *GangliaMetadata) {
+func (r *response) getr() (<-chan *Metadata) {
   return r.r
 }
 
-func (r *response) sendr(msg *GangliaMetadata) {
+func (r *response) sendr(msg *Metadata) {
   select {
   case r.r <- msg:
   default:
@@ -43,41 +43,46 @@ func (r *response) sendr(msg *GangliaMetadata) {
 
 type regReq struct {
   response
-  metadata *GangliaMetadata
+  metadata *Metadata
 }
 
 type getReq struct {
   response
-  metric GangliaMetricType
+  metric MetricType
 }
 
-func makeReq(m GangliaMetricType) (*getReq) {
+func makeReq(m MetricType) (*getReq) {
   nr := &getReq{
-    response:response{r: make(chan *GangliaMetadata,1),
+    response:response{r: make(chan *Metadata,1),
                       t: requestMetadata},
     metric:m,
   }
   return nr
 }
 
-func makeReg(m *GangliaMetadata) (*regReq) {
+func makeReg(m *Metadata) (*regReq) {
   nr := &regReq{
-    response:response{r: make(chan *GangliaMetadata,1),
+    response:response{r: make(chan *Metadata,1),
                       t: registerMetadata},
     metadata:m,
   }
   return nr
 }
 
-type metadataServer struct {
+// An encapsulated server structure which can cache metadata fed to it by
+// ganglia metric id and later return copies of that metadata in respose
+// to lookup requests. It is normally not necessary to create GMetadataServer
+// objects as simple calling the singleton MetadataServer's Register or
+// Lookup methods will auto-start it.
+type GMetadataServer struct {
   req chan requestType
 
   starter sync.Once
 }
 
 var (
-  GangliaMetadataServer metadataServer
-  GangliaMetadataNotFound = errors.New("Ganglia metadata not found")
+  MetadataServer GMetadataServer
+  MetadataNotFound = errors.New("Ganglia metadata not found")
   uidMap = make(map[int] uid)
   uidMutex sync.Mutex
 )
@@ -102,17 +107,17 @@ func uidGenerator(seed int) uid {
   return last
 }
 
-func (s *metadataServer) start() {
-  var metadata []GangliaMetadata = make([]GangliaMetadata,0)
-  var registry map[uid] *GangliaMetadata = make(map[uid] *GangliaMetadata)
+func (s *GMetadataServer) start() {
+  var metadata []Metadata = make([]Metadata,0)
+  var registry map[uid] *Metadata = make(map[uid] *Metadata)
   var idmap map[string] uid = make(map[string] uid)
   var wg sync.WaitGroup
   wg.Add(1)
   defer wg.Wait()
 
   go func() {
-    var mid *GangliaMetricId
-    var meta *GangliaMetadata
+    var mid *MetricIdentifier
+    var meta *Metadata
     var ok bool
 
     defer func() {
@@ -200,7 +205,7 @@ func (s *metadataServer) start() {
 // Register new metadata with the metadata server so that it will auto-associate
 // with any metrics seen in the future. Registing pre-existing metadata is a no-op
 // but will not produce an error.
-func (s *metadataServer) Register(md *GangliaMetadata) (rmd *GangliaMetadata, err error) {
+func (s *GMetadataServer) Register(md *Metadata) (rmd *Metadata, err error) {
   s.starter.Do(s.start)
 
   r := makeReg(md)
@@ -208,23 +213,23 @@ func (s *metadataServer) Register(md *GangliaMetadata) (rmd *GangliaMetadata, er
   rmd = <-r.getr()
 
   if rmd == nil || rmd.metric_id == nil || rmd.metric_id.id == uid(0) {
-    err = GangliaMetadataNotFound
+    err = MetadataNotFound
     rmd = nil
   }
   return
 }
 
 // Lookup any metadata previously registered for a an object that can respond
-// validly to a MetricId() call. If no metadata is found, GangliaMetadataNotFound
+// validly to a MetricId() call. If no metadata is found, MetadataNotFound
 // is returned as an error.
-func (s *metadataServer) Lookup(obj GangliaMetricType) (md *GangliaMetadata, err error) {
+func (s *GMetadataServer) Lookup(obj MetricType) (md *Metadata, err error) {
   s.starter.Do(s.start)
 
   r := makeReq(obj)
   s.req <- r
   md = <-r.getr()
   if md == nil {
-    err = GangliaMetadataNotFound
+    err = MetadataNotFound
   }
   return
 }

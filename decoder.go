@@ -41,7 +41,7 @@ func xdrBool(v interface{}) (r bool) {
 }
 
 // Performs the actual xdr decode via some C helper functions and libganglia.
-func xdrDecode(lock sync.Locker, buf []byte) (msg GangliaMessage, nbytes int, err error) {
+func xdrDecode(lock sync.Locker, buf []byte) (msg Message, nbytes int, err error) {
   var xdr *C.XDR
   var cbuf *C.char
 
@@ -98,17 +98,17 @@ func xdrDecode(lock sync.Locker, buf []byte) (msg GangliaMessage, nbytes int, er
     defer C.helper_uninit_xdr(xdr,mf)
     nbytes = int(C.helper_perform_xdr(xdr,fmsg,vmsg,mf))
     if nbytes > 0 {
-      var info *GMetricInfo
+      var info *MetricInfo
       var metric_id *C.Ganglia_metric_id
 
-      id := GangliaMsgFormat(*mf)
+      id := MsgFormat(*mf)
       // log.Printf("XDR bytes=%v id=%v", nbytes,id)
       switch(id) {
       case GMETADATA_REQUEST:
         greq := C.Ganglia_metadata_msg_u_grequest(fmsg)
-        msg = &GangliaMetadataReq{
+        msg = &MetadataReq{
             gangliaMsg:gangliaMsg{formatIdentifier:id},
-            GangliaMetricId:&GangliaMetricId{
+            MetricIdentifier:&MetricIdentifier{
                 Host:C.GoString(greq.metric_id.host),
                 Name:C.GoString(greq.metric_id.name),
                 Spoof:xdrBool(greq.metric_id.spoof),
@@ -118,16 +118,16 @@ func xdrDecode(lock sync.Locker, buf []byte) (msg GangliaMessage, nbytes int, er
          C.helper_free_xdr(xdr,mf,unsafe.Pointer(fmsg))
       case GMETADATA_FULL:
         gfull := C.Ganglia_metadata_msg_u_gfull(fmsg)
-        mid := &GangliaMetricId{
+        mid := &MetricIdentifier{
                 Host:C.GoString(gfull.metric_id.host),
                 Name:C.GoString(gfull.metric_id.name),
                 Spoof:xdrBool(gfull.metric_id.spoof),
                 Exists:true,
             }
-        msg = &GangliaMetadataDef{
+        msg = &MetadataDef{
             gangliaMsg:gangliaMsg{formatIdentifier:id},
-            GangliaMetricId:mid,
-            metric:GangliaMetadata{
+            MetricIdentifier:mid,
+            metric:Metadata{
                 Type:C.GoString(gfull.metric._type),
                 Name:C.GoString(gfull.metric.name),
                 Units:C.GoString(gfull.metric.units),
@@ -142,7 +142,7 @@ func xdrDecode(lock sync.Locker, buf []byte) (msg GangliaMessage, nbytes int, er
       case GMETRIC_STRING:
         gstr := C.Ganglia_value_msg_u_gstr(vmsg)
         metric_id = &gstr.metric_id
-        info = &GMetricInfo{
+        info = &MetricInfo{
           Value: C.GoString(gstr.str),
           Format: C.GoString(gstr.fmt),
         }
@@ -153,7 +153,7 @@ func xdrDecode(lock sync.Locker, buf []byte) (msg GangliaMessage, nbytes int, er
         if f == "%u" || f == "%hu" {
           f = ""
         }
-        info = &GMetricInfo{
+        info = &MetricInfo{
           Value: uint16(gus.us),
           Format: f,
         }
@@ -164,7 +164,7 @@ func xdrDecode(lock sync.Locker, buf []byte) (msg GangliaMessage, nbytes int, er
         if f == "%d" || f == "%h" {
           f = ""
         }
-        info = &GMetricInfo{
+        info = &MetricInfo{
           Value: int16(gss.ss),
           Format: f,
         }
@@ -175,7 +175,7 @@ func xdrDecode(lock sync.Locker, buf []byte) (msg GangliaMessage, nbytes int, er
         if f == "%u" {
           f = ""
         }
-        info = &GMetricInfo{
+        info = &MetricInfo{
           Value: uint32(gint.ui),
           Format: f,
         }
@@ -186,7 +186,7 @@ func xdrDecode(lock sync.Locker, buf []byte) (msg GangliaMessage, nbytes int, er
         if f == "%d" {
           f = ""
         }
-        info = &GMetricInfo{
+        info = &MetricInfo{
           Value: int32(gint.si),
           Format: f,
         }
@@ -194,14 +194,14 @@ func xdrDecode(lock sync.Locker, buf []byte) (msg GangliaMessage, nbytes int, er
       case GMETRIC_FLOAT:
         gflt := C.Ganglia_value_msg_u_gf(vmsg)
         metric_id = &gflt.metric_id
-        info = &GMetricInfo{
+        info = &MetricInfo{
           Value: float32(gflt.f),
           Format: C.GoString(gflt.fmt),
         }
       case GMETRIC_DOUBLE:
         gdbl := C.Ganglia_value_msg_u_gd(vmsg)
         metric_id = &gdbl.metric_id
-        info = &GMetricInfo{
+        info = &MetricInfo{
           Value: float64(gdbl.d),
           Format: C.GoString(gdbl.fmt),
         }
@@ -226,7 +226,7 @@ func xdrDecode(lock sync.Locker, buf []byte) (msg GangliaMessage, nbytes int, er
   }
   // log.Printf("xdr bytes consumed: %v",nbytes)
   if err == nil && msg != nil && !msg.HasMetadata() {
-    md,err := GangliaMetadataServer.Lookup(msg)
+    md,err := MetadataServer.Lookup(msg)
     if err == nil {
       if md == nil {
         panic("bad metadata from metadata server")
@@ -268,9 +268,9 @@ func ShutdownXDRDecoder() (err error) {
 // TODO: mulitplexing.
 func StartXDRDecoder(input <-chan []byte,
                      inbuf []byte,
-                     sout chan GangliaMessage)  (err error) {
+                     sout chan Message)  (err error) {
 
-  var outchans []chan GangliaMessage
+  var outchans []chan Message
   locker := getPoolManager()
 
   wg = new(sync.WaitGroup)
@@ -280,12 +280,12 @@ func StartXDRDecoder(input <-chan []byte,
     outchans = append(outchans,sout)
   }
 
-  dist := make(chan GangliaMessage,1)
+  dist := make(chan Message,1)
 
   wg.Add(1)
   defer wg.Done()
 
-  go func(inp <-chan GangliaMessage, outputs []chan GangliaMessage) {
+  go func(inp <-chan Message, outputs []chan Message) {
     wg.Add(1)
     defer wg.Wait()
     defer wg.Done()
@@ -322,7 +322,7 @@ func StartXDRDecoder(input <-chan []byte,
     }
   }(dist,outchans)
 
-  go func(inp <-chan []byte, outp chan GangliaMessage, sprev []byte) {
+  go func(inp <-chan []byte, outp chan Message, sprev []byte) {
     var msg []byte
     inbuf := bytes.NewBuffer(sprev)
     var nbytes int = inbuf.Len()

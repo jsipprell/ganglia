@@ -17,14 +17,14 @@ import (
 )
 
 var (
-  typeMap map[GangliaMsgFormat] reflect.Kind
-  revTypeMap map[reflect.Kind] GangliaMsgFormat
+  typeMap map[MsgFormat] reflect.Kind
+  revTypeMap map[reflect.Kind] MsgFormat
   GMetricTypeError = errors.New("Type not compatible with gmetric type")
 )
 
 func init() {
-  typeMap = make(map[GangliaMsgFormat] reflect.Kind)
-  revTypeMap = make(map[reflect.Kind] GangliaMsgFormat)
+  typeMap = make(map[MsgFormat] reflect.Kind)
+  revTypeMap = make(map[reflect.Kind] MsgFormat)
 
   typeMap[GMETRIC_USHORT] = reflect.Uint16
   revTypeMap[reflect.Uint16] = GMETRIC_USHORT
@@ -45,7 +45,7 @@ func init() {
 }
 
 // For use when constructing new metrics via NewMetric, all fields are optional.
-type GMetricInfo struct {
+type MetricInfo struct {
   Value interface{}
   Format string
   Host []byte
@@ -54,49 +54,49 @@ type GMetricInfo struct {
 }
 
 // All mertrics and metadata must respond with an Id
-type GangliaMetricType interface {
-  MetricId() *GangliaMetricId
+type MetricType interface {
+  MetricId() *MetricIdentifier
 }
 
 // All ganglia messages have an associated format identifer
-type GangliaIdentifier interface {
-  FormatId() GangliaMsgFormat
+type Identifier interface {
+  FormatId() MsgFormat
 }
 
 // All ganglia objects that can be queried about metadata requests,
 // whether they contain their own metadata or whether they define
 // metadata. Finally, GetMetadata() can be used to acquire any
 // such metadata
-type GangliaMetadataHandler interface {
+type MetadataQuery interface {
   IsRequest() bool
   HasMetadata() bool
   IsMetadataDef() bool
-  GetMetadata() *GangliaMetadata
+  GetMetadata() *Metadata
 }
 
 // The basic interface all messages will support when spit out
 // by the xdr decoder.
-type GangliaMessage interface {
-  GangliaMetadataHandler
-  FormatId() GangliaMsgFormat
-  MetricId() *GangliaMetricId
+type Message interface {
+  MetadataQuery
+  FormatId() MsgFormat
+  MetricId() *MetricIdentifier
 }
 
 // All ganglia objects that contain actual metrics (rather than
 // separate metadata definitions or requests) will support this
 // interface.
-type GMetric interface {
-  GangliaMetadataHandler
-  FormatId() GangliaMsgFormat
-  MetricId() *GangliaMetricId
+type Metric interface {
+  MetadataQuery
+  FormatId() MsgFormat
+  MetricId() *MetricIdentifier
   GetValue() reflect.Value
   SetFormat(f []byte)
   String() string
 }
 
-// GangliaMetricId identifies a specific message, metric
+// MetricIdentifier identifies a specific message, metric
 // or metadata packet.
-type GangliaMetricId struct {
+type MetricIdentifier struct {
   Host, Name string
   Spoof bool
   Exists bool
@@ -105,15 +105,15 @@ type GangliaMetricId struct {
 
 // Return the canonical metric id for a message or metadata
 // packet.
-func (mid *GangliaMetricId) MetricId() *GangliaMetricId {
+func (mid *MetricIdentifier) MetricId() *MetricIdentifier {
   return mid
 }
 
 type gangliaMsg struct {
-  formatIdentifier GangliaMsgFormat
+  formatIdentifier MsgFormat
 }
 
-func (msg gangliaMsg) FormatId() (GangliaMsgFormat) {
+func (msg gangliaMsg) FormatId() (MsgFormat) {
   return msg.formatIdentifier
 }
 
@@ -125,19 +125,19 @@ func (msg *gangliaMsg) IsMetadataDef() bool {
   return false
 }
 
-func (sl GangliaSlope) String() (s string) {
+func (sl Slope) String() (s string) {
   switch(sl) {
-  case GANGLIA_SLOPE_ZERO:
+  case SLOPE_ZERO:
     s = "zero"
-  case GANGLIA_SLOPE_POSITIVE:
+  case SLOPE_POSITIVE:
     s = "positive"
-  case GANGLIA_SLOPE_NEGATIVE:
+  case SLOPE_NEGATIVE:
     s = "negative"
-  case GANGLIA_SLOPE_BOTH:
+  case SLOPE_BOTH:
     s = "both"
-  case GANGLIA_SLOPE_DERIVATIVE:
+  case SLOPE_DERIVATIVE:
     s = "derivative"
-  case GANGLIA_SLOPE_UNSPECIFIED:
+  case SLOPE_UNSPECIFIED:
     s = "unspecified"
   default:
     s = fmt.Sprintf("unsupported_slope_%d",int(sl))
@@ -145,7 +145,7 @@ func (sl GangliaSlope) String() (s string) {
   return
 }
 
-func (id GangliaMsgFormat) String() (s string) {
+func (id MsgFormat) String() (s string) {
   switch(id) {
   case GMETADATA_FULL:
     s = "gmetadata_full"
@@ -177,28 +177,28 @@ type KeyValueMetadata interface {
 }
 
 // Basic ganglia metadata strucutre.
-type GangliaMetadata struct {
+type Metadata struct {
   Type string
   Name string
   Units string
-  Slope GangliaSlope
+  Slope Slope
   Tmax, Dmax uint
 
   extra []KeyValueMetadata
-  metric_id *GangliaMetricId
+  metric_id *MetricIdentifier
 }
 
 // Create a unique copy of some piece of metadata.
 // Note that the metric id is never copied and always shared
 // by all copies.
-func (md *GangliaMetadata) copy() (*GangliaMetadata) {
+func (md *Metadata) copy() (*Metadata) {
   var extra []KeyValueMetadata
 
   if md.extra != nil {
     extra = make([]KeyValueMetadata,len(md.extra),len(md.extra))
     copy(extra,md.extra)
   }
-  return &GangliaMetadata{
+  return &Metadata{
     Type:md.Type,
     Name:md.Name,
     Units:md.Units,
@@ -212,69 +212,69 @@ func (md *GangliaMetadata) copy() (*GangliaMetadata) {
 
 // A metadata defintion update message from or to
 // another ganglia agent.
-type GangliaMetadataDef struct {
+type MetadataDef struct {
   gangliaMsg
-  *GangliaMetricId
-  metric GangliaMetadata
+  *MetricIdentifier
+  metric Metadata
 }
 
 // Returns the canonical metric id of a metadata update
-func (mdef *GangliaMetadataDef) MetricId() (*GangliaMetricId) {
+func (mdef *MetadataDef) MetricId() (*MetricIdentifier) {
   if mdef.metric.metric_id != nil {
     return mdef.metric.metric_id
   }
-  return mdef.GangliaMetricId
+  return mdef.MetricIdentifier
 }
 
 // Always returns true for a metdadate definition/update.
-func (mdef *GangliaMetadataDef) HasMetadata() bool {
+func (mdef *MetadataDef) HasMetadata() bool {
   return true
 }
 
 // Always returns true for a metdadate definition/update.
-func (mdef *GangliaMetadataDef) IsMetadataDef() bool {
+func (mdef *MetadataDef) IsMetadataDef() bool {
   return true
 }
 
 // Returns the actual metadata from a definition/update
-func (mdef *GangliaMetadataDef) GetMetadata() *GangliaMetadata {
+func (mdef *MetadataDef) GetMetadata() *Metadata {
   return &mdef.metric
 }
 
 // Always returns false for a metadata definition/update
-func (mdef *GangliaMetadataDef) IsRequest() bool {
+func (mdef *MetadataDef) IsRequest() bool {
   return false
 }
 
 // Requests metadata update from an agent.
-type GangliaMetadataReq struct {
+type MetadataReq struct {
   gangliaMsg
-  *GangliaMetricId
+  *MetricIdentifier
 }
 
 // Always returns true for a metadata request
-func (mreq *GangliaMetadataReq) IsRequest() bool {
+func (mreq *MetadataReq) IsRequest() bool {
   return true
 }
 
 // Always returns false for a metadata request
-func (mreq *GangliaMetadataReq) HasMetadata() bool {
+func (mreq *MetadataReq) HasMetadata() bool {
   return false
 }
 
 // Always returns false for a metadata request
-func (mreq *GangliaMetadataReq) IsMetadataDef() bool {
+func (mreq *MetadataReq) IsMetadataDef() bool {
   return false
 }
 
 // Requests never have any metadata thus this will return nil.
-func (mreq *GangliaMetadataReq) GetMetadata() *GangliaMetadata {
+func (mreq *MetadataReq) GetMetadata() *Metadata {
   return nil
 }
 
 type gmetric struct {
   gangliaMsg
-  GangliaMetricId
+  MetricIdentifier
   fmt string
   value reflect.Value
   metadata interface{}
@@ -291,9 +291,9 @@ func (m *gmetric) HasMetadata() (r bool) {
 }
 
 // Returns the metadata associated with a metric.
-func (m *gmetric) GetMetadata() (md *GangliaMetadata) {
+func (m *gmetric) GetMetadata() (md *Metadata) {
   if m.metadata != nil {
-    md = m.metadata.(*GangliaMetadata)
+    md = m.metadata.(*Metadata)
   }
   return
 }
@@ -304,8 +304,8 @@ func (m *gmetric) IsRequest() bool {
 }
 
 // Return the canonical metric id.
-func (m *gmetric) MetricId() (*GangliaMetricId) {
-  return &m.GangliaMetricId
+func (m *gmetric) MetricId() (*MetricIdentifier) {
+  return &m.MetricIdentifier
 }
 
 // Set the printf() style format string. Empty
@@ -373,9 +373,9 @@ func (m *gmetric) GetValue() reflect.Value {
 }
 
 // Create a new ganglia metric using the specified format and
-// with the parameters specified in a GMetricInfo structure.
-func NewMetric(format GangliaMsgFormat, info ...GMetricInfo) (gm GMetric, err error) {
-  var mid GangliaMetricId
+// with the parameters specified in a MetricInfo structure.
+func NewMetric(format MsgFormat, info ...MetricInfo) (gm Metric, err error) {
+  var mid MetricIdentifier
   for _,i := range info {
     if i.Name != nil {
       mid.Name = string(i.Name)
@@ -392,7 +392,7 @@ func NewMetric(format GangliaMsgFormat, info ...GMetricInfo) (gm GMetric, err er
     err = fmt.Errorf("no valid metric id for %v", format)
     return
   }
-  m := &gmetric{GangliaMetricId:mid,
+  m := &gmetric{MetricIdentifier:mid,
                 gangliaMsg:gangliaMsg{formatIdentifier:format}}
   for _,i := range info {
     if i.Value != nil {
@@ -416,16 +416,16 @@ func NewMetric(format GangliaMsgFormat, info ...GMetricInfo) (gm GMetric, err er
 func (m *gmetric) String() string {
   var metric string = m.FormatId().String()
   var attrs []string
-  var metadata *GangliaMetadata
+  var metadata *Metadata
 
   metadata = m.GetMetadata()
 
-  if m.GangliaMetricId.Exists && m.GangliaMetricId.Name != "" {
-    attrs = append(attrs, fmt.Sprintf("name=\"%s\"",m.GangliaMetricId.Name))
+  if m.MetricIdentifier.Exists && m.MetricIdentifier.Name != "" {
+    attrs = append(attrs, fmt.Sprintf("name=\"%s\"",m.MetricIdentifier.Name))
   }
 
-  if m.GangliaMetricId.Exists && m.GangliaMetricId.Host != "" {
-    attrs = append(attrs, fmt.Sprintf("host=\"%s\"",m.GangliaMetricId.Host))
+  if m.MetricIdentifier.Exists && m.MetricIdentifier.Host != "" {
+    attrs = append(attrs, fmt.Sprintf("host=\"%s\"",m.MetricIdentifier.Host))
   }
 
   if m.value.IsValid() {
@@ -450,7 +450,7 @@ func (m *gmetric) String() string {
     if metadata.Units != "" {
       attrs = append(attrs, fmt.Sprintf("units=\"%s\"",metadata.Units))
     }
-    if metadata.Slope > GangliaSlope(0) {
+    if metadata.Slope > Slope(0) {
       attrs = append(attrs, fmt.Sprintf("slope=\"%s\"",metadata.Slope.String()))
     }
     attrs = append(attrs, fmt.Sprintf("tmax=\"%v\"",metadata.Tmax))
