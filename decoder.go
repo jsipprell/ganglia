@@ -11,15 +11,187 @@ import (
   "sync"
   "unsafe"
   "log"
+  "io"
   "bytes"
 )
 
 var (
-  shutdown chan struct{}
-  wg *sync.WaitGroup
-  AlreadyShutdownError = errors.New("Socket reader already shutdown")
+  DecoderAlreadyStopped = errors.New("XDR decoder already stopped")
+  DecoderAlreadyStarted = errors.New("XDR decoder already started")
   XDRDecodeFailure = errors.New("XDR decode failure")
 )
+
+// XDRDecoder is an interface for writing packets or streams to an
+// xdr decoder goroutine which will then output Message interface-
+// compatible objects via its output channel. An object implementing
+// XDRDecoder will start automatically when its Output() method
+// is called or when manually started via calling Start().
+//
+// XDRDecoder also implements io.Writer and thus such objects can
+// be passed to anything that supports this interface. When used
+// as io.Writer objects only GANGLIA_MAX_MESSAGE_LEN bytes will
+// be written at one time.
+type XDRDecoder interface {
+  io.Writer
+  // Set the input channel that an XDRDecoder will read from
+  // If the decoder goroutine was already running when this is
+  // called it is stopped and a new one started. The initial
+  // argument specifies a buffer to be initially parsed.
+  // before any data received from the byte channel.
+  SetInput(inchan chan []byte, initial ...[]byte) error
+  // Return the output channel that ganglia messages will be sent
+  // to. This can be iterated over via for ... range
+  Output() <-chan Message
+  // Stop the xdr decoder if it's running, otherwise return
+  // DecoderAlreadyStopped
+  Stop() error
+  // Start the xdr decoder if it's not running, otherwise return
+  // DecoderAlreadyStarted. This is only necessary to call if one
+  // wishes to manually start the decoder.
+  Start() error
+  // Return true if the decoder goroutine is running.
+  IsRunning() bool
+}
+
+type xdrDecoder struct {
+  shutdown chan struct{}
+  wg *sync.WaitGroup
+  inchan chan []byte
+  outchan chan Message
+  start *sync.Once
+  locker sync.Locker
+  started bool
+  buffer []byte
+}
+
+// Create a new xdr decoder with an output channel queue depth of
+// ``outputQueue`` messages. This will allow the decoder to continue
+// to output message objects until the queue is full If the queue fills
+// the decoder will block for up to 100ms once the queue fills before
+// panicing.
+func NewXDRDecoder(outputQueue int) (decoder XDRDecoder, err error) {
+  if outputQueue < 0 {
+    outputQueue = 32
+  }
+  xdr := &xdrDecoder{
+    wg: &sync.WaitGroup{},
+    outchan: make(chan Message,outputQueue),
+    start: &sync.Once{},
+    locker: getPoolManager(),
+  }
+
+  decoder = xdr
+  return
+}
+
+func (xdr *xdrDecoder) Stop() (err error) {
+  xdr.locker.Lock()
+  if xdr.shutdown == nil {
+    defer xdr.locker.Unlock()
+    return DecoderAlreadyStopped
+  }
+  defer func() {
+    xdr.shutdown = nil
+    xdr.start = new(sync.Once)
+    xdr.started = false
+  }()
+  defer xdr.wg.Wait()
+  xdr.locker.Unlock()
+  close(xdr.shutdown)
+  return
+}
+
+func (xdr *xdrDecoder) Start() (err error) {
+  xdr.locker.Lock()
+  if xdr.shutdown != nil {
+    defer xdr.locker.Unlock()
+    return DecoderAlreadyStarted
+  }
+  xdr.locker.Unlock()
+
+  xdr.start.Do(func() {
+    var s sync.WaitGroup
+
+    s.Add(1)
+    if xdr.inchan == nil {
+      xdr.inchan = make(chan []byte,1)
+    }
+    xdr.shutdown = make(chan struct{})
+    xdr.runDecoder(&s)
+    s.Wait()
+    xdr.started = true
+  })
+  return
+}
+
+func (xdr *xdrDecoder) IsRunning() (r bool) {
+  xdr.locker.Lock()
+  defer xdr.locker.Unlock()
+  if xdr.shutdown != nil {
+    r = true
+  }
+  return
+}
+
+func (xdr *xdrDecoder) SetInput(c chan []byte, bufs ...[]byte) (err error) {
+  var restart bool = false
+  if xdr.IsRunning() {
+    restart = true
+    xdr.Stop()
+  }
+  xdr.locker.Lock()
+  defer func() {
+    if restart && (xdr.inchan != nil || len(xdr.buffer) > 0) {
+      xdr.Start()
+    }
+  }()
+  defer xdr.locker.Unlock()
+  xdr.inchan = c
+  if bufs != nil {
+    var size int
+    for _,b := range bufs {
+      size += len(b)
+    }
+    buf := bytes.NewBuffer(make([]byte,0,size))
+    for _,b := range bufs {
+      buf.Write(b)
+    }
+    xdr.buffer = buf.Bytes()
+  } else {
+    xdr.buffer = nil
+  }
+  return
+}
+
+func (xdr *xdrDecoder) Output() (c <-chan Message) {
+  c = xdr.outchan
+  if !xdr.started {
+    xdr.Start()
+  }
+  return
+}
+
+// Write a buffer to the xdr decoder input stream. At *most*
+// GANGLIA_MAX_MESSAGE_LEN bytes will be written at once
+// and the first return value of the write will account
+// for this by returning a smaller number than requested
+// as well as io.ErrShortWrite in the second return value.
+func (xdr *xdrDecoder) Write(p []byte) (n int, err error) {
+  var buf *bytes.Buffer
+
+  if len(p) > GANGLIA_MAX_MESSAGE_LEN {
+    buf = bytes.NewBuffer(p[:GANGLIA_MAX_MESSAGE_LEN])
+    err = io.ErrShortWrite
+  } else {
+    buf = bytes.NewBuffer(p)
+  }
+  if !xdr.started {
+    xdr.Start()
+  }
+  n = buf.Len()
+  xdr.inchan <- buf.Bytes()
+  return
+}
 
 // the bool_t type from xdr is a pain
 func xdrBool(v interface{}) (r bool) {
@@ -226,23 +398,6 @@ func xdrDecode(lock sync.Locker, buf []byte) (msg Message, nbytes int, err error
   return
 }
 
-// Shuts down the currently running xdr decoder.
-func ShutdownXDRDecoder() (err error) {
-  select {
-  case <-shutdown:
-    err =  AlreadyShutdownError
-  default:
-    close(shutdown)
-  }
-  if err == nil && wg != nil {
-    defer func() {
-      wg = nil
-    }()
-    defer wg.Wait()
-  }
-  return
-}
-
 // Starts goroutines to read raw data from a channel, send it to a decoder
 // which will instantiate new message objects as sufficient data becomes availeble.
 // These messages will be sent to the output channel. If no receiver is available
@@ -254,71 +409,12 @@ func ShutdownXDRDecoder() (err error) {
 // buffer and retried once more data becomes available.
 //
 // TODO: mulitplexing.
-func StartXDRDecoder(input <-chan []byte,
-                     inbuf []byte,
-                     sout chan Message)  (err error) {
-
-  var outchans []chan Message
-  locker := getPoolManager()
-
-  wg = new(sync.WaitGroup)
-  shutdown = make(chan struct{},1)
-
-  if sout != nil {
-    outchans = append(outchans,sout)
-  }
-
-  dist := make(chan Message,1)
-
-  wg.Add(1)
-  defer wg.Done()
-
-  go func(inp <-chan Message, outputs []chan Message) {
-    wg.Add(1)
-    defer wg.Wait()
-    defer wg.Done()
-
-    defer func() {
-      err := recover()
-      if err != nil {
-        log.Fatalf("XDR DECODER PANIC: %v", err)
-      }
-    }()
-
-    for {
-      select {
-      case <-shutdown:
-        for _,c := range outputs {
-          select {
-          case <-c:
-          default:
-            close(c)
-          }
-        }
-        return
-      case msg := <-inp:
-        for _,c := range outputs {
-          if c != nil {
-            select {
-            case <-time.After(time.Duration(100) * time.Millisecond):
-              panic("100ms timeout blocking on sending buffer to decoder(s)")
-            case c <- msg:
-            }
-          }
-        }
-      }
-    }
-  }(dist,outchans)
-
-  go func(inp <-chan []byte, outp chan Message, sprev []byte) {
-    var msg []byte
-    inbuf := bytes.NewBuffer(sprev)
-    var nbytes int = inbuf.Len()
-
-    _ = nbytes
-    wg.Add(1)
-    defer wg.Wait()
-    defer wg.Done()
+func (xdr *xdrDecoder) runDecoder(sg *sync.WaitGroup) {
+  xdr.wg.Add(1)
+  go func() {
+    var msg Message
+    var err error
+    var nbytes int
 
     defer func() {
       err := recover()
@@ -327,29 +423,19 @@ func StartXDRDecoder(input <-chan []byte,
       }
     }()
 
-    for {
-      if inbuf.Len() == 0 {
-        inbuf.Truncate(0)
-      }
-      select {
-      case msg = <-inp:
-        if msg != nil {
-          _,err := inbuf.Write(msg)
-          if err != nil {
-            log.Fatalf("pre-xdr input buffer: %v", err)
-          }
-        }
-      case <-shutdown:
-        return
-      }
+    defer xdr.wg.Done()
+    inbuf := bytes.NewBuffer(xdr.buffer)
+    xdr.buffer = make([]byte,0)
+    sg.Done()
 
+    for {
       for l := inbuf.Len(); l > 0; l = inbuf.Len() {
         if l > GANGLIA_MAX_MESSAGE_LEN {
           panic("input buffer exceeded maximum ganglia message length")
         }
 
         outbuf := inbuf.Bytes()
-        msg, nbytes, err := xdrDecode(locker,outbuf)
+        msg, nbytes, err = xdrDecode(xdr.locker,outbuf)
         // log.Printf("msg=%v, nbytes=%v, err=%v",msg,nbytes,err)
         if err != nil {
           log.Printf("xdr decode error (%v/%v bytes): %v", l, nbytes, err)
@@ -362,16 +448,32 @@ func StartXDRDecoder(input <-chan []byte,
         }
         if msg != nil {
           select {
-          case _ = <-time.After(time.Duration(500) * time.Millisecond):
-              log.Printf("WARNING: dropping message, output blocked for 500ms")
-          case outp <- msg:
+          case _ = <-time.After(time.Duration(100) * time.Millisecond):
+              log.Printf("WARNING: dropping message, output blocked for 100ms")
+          case xdr.outchan <- msg:
+            msg = nil
+          case <-xdr.shutdown:
+            return
           }
         }
         inbuf.Next(nbytes)
       }
+      select {
+      case msg := <-xdr.inchan:
+        if msg != nil {
+          _,err := inbuf.Write(msg)
+          if err != nil {
+            log.Fatalf("pre-xdr input buffer: %v", err)
+          }
+        }
+      case <-xdr.shutdown:
+        return
+      }
+      if inbuf.Len() == 0 {
+        inbuf.Truncate(0)
+      }
     }
-  }(input,dist,inbuf)
-  return
+  }()
 }
 
 // vi: set sts=2 sw=2 ai et tw=0 syntax=go:

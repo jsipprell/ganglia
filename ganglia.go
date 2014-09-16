@@ -509,22 +509,43 @@ func (m *gmetric) String() string {
 }
 
 // Start a simple network client which will pass packets to
-// an xdr decoder.
-func Client(addr string, mcast bool, xdr_chan chan []byte) {
-  wg := sync.WaitGroup{}
-
-  maddr,err := net.ResolveUDPAddr("udp",addr)
+// an xdr decoder. The client returns a channel which if closed will terminate the client and
+// a waitgroup that can be used to wait for this termination to complete. Errors returned
+// are almost entirely due to underlying network errors.
+//
+// The address argument should be either a multicast:port pair, an interface address:port pair
+// or 0.0.0.0:port/[::]:port for ipv4/ipv6 "any interface" mode.
+func Client(addr string, xdr_chan chan []byte) (quit chan struct{}, wg *sync.WaitGroup, err error) {
+  var conn *net.UDPConn
+  var maddr *net.UDPAddr
+  maddr,err = net.ResolveUDPAddr("udp",addr)
   if err != nil {
-    log.Fatalf("cannot resolve %v",addr,err)
+    return
   }
+
+  if maddr.IP.IsMulticast() {
+    conn,err = net.ListenMulticastUDP("udp",nil,maddr)
+  } else {
+    conn,err = net.ListenUDP("udp",maddr)
+  }
+
+  if err != nil {
+    return
+  }
+  quit = make(chan struct{})
+  wg = &sync.WaitGroup{}
   wg.Add(1)
-  defer close(xdr_chan)
-  defer wg.Wait()
-  go func(addr *net.UDPAddr) {
-    var conn *net.UDPConn
+  go func() {
     var err error
 
     defer wg.Done()
+    defer func() {
+      select {
+      case <-quit:
+      default:
+        close(quit)
+      }
+    }()
     defer func() {
       err := recover()
       if err != nil {
@@ -532,11 +553,6 @@ func Client(addr string, mcast bool, xdr_chan chan []byte) {
       }
     }()
 
-    if mcast {
-      conn,err = net.ListenMulticastUDP("udp",nil,addr)
-    } else {
-      conn,err = net.ListenUDP("udp",addr)
-    }
     if err != nil {
       log.Printf("network failure during listen: %v", err)
       return
@@ -556,7 +572,15 @@ func Client(addr string, mcast bool, xdr_chan chan []byte) {
         xdr_chan <- buf[:nbytes]
       }
     }
-  }(maddr)
+  }()
+
+  wg.Add(1)
+  go func() {
+    defer wg.Done()
+    defer conn.Close()
+    <-quit
+  }()
+  return
 }
 
 // vi: set sts=2 sw=2 ai et tw=0 syntax=go:
