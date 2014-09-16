@@ -150,9 +150,6 @@ func xdrDecode(lock sync.Locker, buf []byte) (msg Message, nbytes int, err error
         gus := C.Ganglia_value_msg_u_gu_short(vmsg)
         metric_id = &gus.metric_id
         f := C.GoString(gus.fmt)
-        if f == "%u" || f == "%hu" {
-          f = ""
-        }
         info = &MetricInfo{
           Value: uint16(gus.us),
           Format: f,
@@ -161,9 +158,6 @@ func xdrDecode(lock sync.Locker, buf []byte) (msg Message, nbytes int, err error
         gss := C.Ganglia_value_msg_u_gs_short(vmsg)
         metric_id = &gss.metric_id
         f := C.GoString(gss.fmt)
-        if f == "%d" || f == "%h" {
-          f = ""
-        }
         info = &MetricInfo{
           Value: int16(gss.ss),
           Format: f,
@@ -172,9 +166,6 @@ func xdrDecode(lock sync.Locker, buf []byte) (msg Message, nbytes int, err error
         gint := C.Ganglia_value_msg_u_gu_int(vmsg)
         metric_id = &gint.metric_id
         f := C.GoString(gint.fmt)
-        if f == "%u" {
-          f = ""
-        }
         info = &MetricInfo{
           Value: uint32(gint.ui),
           Format: f,
@@ -183,9 +174,6 @@ func xdrDecode(lock sync.Locker, buf []byte) (msg Message, nbytes int, err error
         gint := C.Ganglia_value_msg_u_gs_int(vmsg)
         metric_id = &gint.metric_id
         f := C.GoString(gint.fmt)
-        if f == "%d" {
-          f = ""
-        }
         info = &MetricInfo{
           Value: int32(gint.si),
           Format: f,

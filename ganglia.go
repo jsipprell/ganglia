@@ -14,12 +14,17 @@ import (
   "reflect"
   "fmt"
   "log"
+  "regexp"
 )
 
 var (
   typeMap map[MsgFormat] reflect.Kind
   revTypeMap map[reflect.Kind] MsgFormat
+  stringType = reflect.TypeOf("")
+  formatRe *regexp.Regexp
   GMetricTypeError = errors.New("Type not compatible with gmetric type")
+  GMetricFormatError = errors.New("Cannot convert gmetric value to a formattable value")
+  GMetricNoValueError = errors.New("Metric value is invalid")
 )
 
 func init() {
@@ -42,6 +47,8 @@ func init() {
   revTypeMap[reflect.Float32] = GMETRIC_FLOAT
   typeMap[GMETRIC_DOUBLE] = reflect.Float64
   revTypeMap[reflect.Float64] = GMETRIC_DOUBLE
+
+  formatRe = regexp.MustCompile("%([.\\d]+)?(?:h|l|ll)?([udf])")
 }
 
 // For use when constructing new metrics via NewMetric, all fields are optional.
@@ -90,8 +97,13 @@ type Metric interface {
   FormatId() MsgFormat
   MetricId() *MetricIdentifier
   GetValue() reflect.Value
-  SetFormat(f []byte)
   String() string
+}
+
+type FormattedMetric interface {
+  Metric
+  FormatValue(...interface{}) (string,error)
+  SetFormat([]byte)
 }
 
 // MetricIdentifier identifies a specific message, metric
@@ -311,7 +323,12 @@ func (m *gmetric) MetricId() (*MetricIdentifier) {
 // Set the printf() style format string. Empty
 // strings or nil will use "%v" from go parlance.
 func (m *gmetric) SetFormat(f []byte) {
-  m.fmt = string(f)
+  newfmt := formatRe.ReplaceAll(f,[]byte("%$1$2"))
+  l := len(newfmt)
+  if l > 0 && newfmt[l-1] == 'u' {
+    newfmt[l-1] = 'd'
+  }
+  m.fmt = string(newfmt)
 }
 
 type valueTypes interface {
@@ -411,6 +428,39 @@ func NewMetric(format MsgFormat, info ...MetricInfo) (gm Metric, err error) {
   return
 }
 
+// Returns the value of a metric formatted per its ganglia specification
+func (m *gmetric) FormatValue(args ...interface{}) (s string, err error) {
+  var format []byte
+  if len(args) > 0 {
+    format = []byte(args[0].(string))
+  }
+  if !m.value.IsValid() {
+    err = GMetricNoValueError
+  } else if m.fmt == "" {
+    if m.value.Type().ConvertibleTo(stringType) {
+      s = m.value.Convert(stringType).String()
+    }
+  } else if m.fmt == "%v" {
+    s = fmt.Sprintf(m.fmt,m.value.Interface())
+  } else if m.IsKind(reflect.Float32,reflect.Float64) {
+    s = fmt.Sprintf(m.fmt,m.value.Float())
+  } else if m.IsKind(reflect.Int32,reflect.Int16,reflect.Int64,reflect.Int) {
+    s = fmt.Sprintf(m.fmt,int(m.value.Int()))
+  } else if m.IsKind(reflect.Uint32,reflect.Uint16,reflect.Uint64,reflect.Uint) {
+    s = fmt.Sprintf(m.fmt,uint(m.value.Uint()))
+  } else if m.value.Type().ConvertibleTo(stringType) {
+    s = fmt.Sprintf(m.fmt,m.value.Convert(stringType).String())
+  } else {
+    err = GMetricFormatError
+  }
+
+  if err == nil && format != nil {
+    args[0] = s
+    s = fmt.Sprintf(string(format),args...)
+  }
+  return
+}
+
 // Returns a printable "xmlish" form of a ganglia metric including
 // any associated basic metadata.
 func (m *gmetric) String() string {
@@ -428,15 +478,9 @@ func (m *gmetric) String() string {
     attrs = append(attrs, fmt.Sprintf("host=\"%s\"",m.MetricIdentifier.Host))
   }
 
-  if m.value.IsValid() {
-    var f string
-    if m.fmt == "" {
-      f = "value=\"%v\""
-    } else {
-      f = "value=\""+m.fmt+"\""
-    }
-
-    attrs = append(attrs, fmt.Sprintf(f,m.value.Interface()))
+  s,err  := m.FormatValue("value=\"%s\"")
+  if err == nil {
+    attrs = append(attrs, s)
   }
 
   t := m.value.Type()
@@ -444,6 +488,10 @@ func (m *gmetric) String() string {
     attrs = append(attrs, fmt.Sprintf("type=\"%s\"",metadata.Type))
   } else if t != nil {
     attrs = append(attrs, fmt.Sprintf("type=\"%v\"",t))
+  }
+
+  if m.fmt != "" && m.fmt != "%v" {
+    attrs = append(attrs, fmt.Sprintf("format=\"%s\"",m.fmt))
   }
 
   if metadata != nil {
