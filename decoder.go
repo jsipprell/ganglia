@@ -10,8 +10,10 @@ import (
   "errors"
   "sync"
   "unsafe"
+  "reflect"
   "log"
   "io"
+  "fmt"
   "bytes"
 )
 
@@ -19,7 +21,62 @@ var (
   DecoderAlreadyStopped = errors.New("XDR decoder already stopped")
   DecoderAlreadyStarted = errors.New("XDR decoder already started")
   XDRDecodeFailure = errors.New("XDR decode failure")
+  ErrNoExtraMetadata = errors.New("Additional metadata not found")
 )
+
+type keyedMetadata struct {
+  Metadata
+  extraMetadata
+}
+
+type extraMetadata struct {
+  values []string
+  mapping map[string] []byte
+}
+
+type extraMetadataKey struct {
+  data *extraMetadata
+  key string
+}
+
+func (md *extraMetadata) ValueFor(k []byte) (v []byte, err error) {
+  var ok bool
+  v,ok = md.mapping[string(k)]
+  if !ok {
+    err = fmt.Errorf("No such metadata key '%v'",string(k))
+  }
+  return
+}
+
+func (md *extraMetadataKey) Key() (k []byte, err error) {
+  _,ok := md.data.mapping[md.key]
+  if !ok {
+    err = ErrNoExtraMetadata
+  } else {
+    k = []byte(md.key)
+  }
+  return
+}
+
+func (md *extraMetadataKey) ValueFor(k []byte) (v []byte, err error) {
+  if k == nil {
+    v,err = md.data.ValueFor([]byte(md.key))
+  } else {
+    v,err = md.data.ValueFor(k)
+  }
+
+  return
+}
+
+func (md *extraMetadataKey) Mapping() (m map[string] string) {
+  if len(md.data.mapping) > 0 {
+    m = make(map[string] string)
+    for k,v := range md.data.mapping {
+      m[k] = string(v)
+    }
+  }
+  return
+}
 
 // XDRDecoder is an interface for writing packets or streams to an
 // xdr decoder goroutine which will then output Message interface-
@@ -290,6 +347,26 @@ func xdrDecode(lock sync.Locker, buf []byte) (msg Message, nbytes int, err error
          C.helper_free_xdr(xdr,mf,unsafe.Pointer(fmsg))
       case GMETADATA_FULL:
         gfull := C.Ganglia_metadata_msg_u_gfull(fmsg)
+        var extra_metadata_keys []KeyValueMetadata
+        if int(gfull.metric.metadata.metadata_len) > 0 {
+          exLen := int(gfull.metric.metadata.metadata_len)
+          extra_metadata := &extraMetadata{
+            values: make([]string,exLen),
+            mapping: make(map[string] []byte),
+          }
+          hdr := &reflect.SliceHeader{Data:uintptr(unsafe.Pointer(gfull.metric.metadata.metadata_val)),
+                                       Len:exLen,
+                                       Cap:exLen}
+          extra := *(*[]C.Ganglia_extra_data)(unsafe.Pointer(hdr))
+          for i,val := range extra {
+            key := C.GoString(val.name)
+            extra_metadata.values[i] = C.GoString(val.data)
+            extra_metadata.mapping[key] = []byte(extra_metadata.values[i])
+            extra_metadata_keys = append(extra_metadata_keys,&extraMetadataKey{
+                                          key: key,
+                                          data: extra_metadata})
+          }
+        }
         mid := &MetricIdentifier{
                 Host:C.GoString(gfull.metric_id.host),
                 Name:C.GoString(gfull.metric_id.name),
@@ -305,7 +382,9 @@ func xdrDecode(lock sync.Locker, buf []byte) (msg Message, nbytes int, err error
                 Units:C.GoString(gfull.metric.units),
                 Tmax:uint(gfull.metric.tmax),
                 Dmax:uint(gfull.metric.dmax),
+                Slope:Slope(gfull.metric.slope),
                 metric_id:mid,
+                extra:extra_metadata_keys,
             },
           }
         //log.Printf("DEBUG: metadata name=%v/%v type=%v",mid.Name,msg.MetricId().Name,
